@@ -11,7 +11,7 @@ import zlib
 
 from gi.repository import GLib
 
-from . import files, keymap, mutter, updates, video, wire
+from . import files, hypr, keymap, mutter, updates, video, wire
 from .identity import Devices, Identity, config_dir
 from .mdns import Advertiser
 from .net import Door
@@ -135,15 +135,20 @@ class Host:
         self.using_dmabuf = False
         self.input_state = {}        # session -> {"keys": set(), "buttons": set(), "finish": source id}
         self.bus = None
-        self.mutter = False
+        self.mutter = False          # GNOME: virtual screens and Fit screen too
+        self.desk = mutter           # the desktop's capture, input and monitors: mutter or hypr
         if not args.test_source:
             self.bus = mutter.session_bus()
             self.mutter = mutter.available(self.bus)
             if not self.mutter:
-                raise SystemExit("GNOME's remote desktop API (org.gnome.Mutter.RemoteDesktop) is not on the session "
-                                 "bus. Run this inside your GNOME session, or use --test-source.")
-            self.monitors = mutter.monitors(self.bus)
-            mutter.watch_monitors(self.bus, self._monitors_changed)
+                if not hypr.available(self.bus):
+                    raise SystemExit("Neither GNOME's remote desktop API (org.gnome.Mutter.RemoteDesktop) nor "
+                                     "Hyprland is here. Run this inside your GNOME or Hyprland session, or use "
+                                     "--test-source.")
+                self.desk = hypr
+                log.info("Hyprland: screen through the ScreenCast portal, input through uinput")
+            self.monitors = self.desk.monitors(self.bus)
+            self.desk.watch_monitors(self.bus, self._monitors_changed)
             log.info("monitors: %s", self.monitors)
         self.updates = updates.Checker(on_change=lambda: GLib.idle_add(lambda: (self.broadcast_window_list(), False)[1]))
         self.door = Door(self.identity, args.port, self, self.devices, require_pairing=not args.open)
@@ -242,9 +247,9 @@ class Host:
 
     def _monitors_changed(self):
         try:
-            self.monitors = mutter.monitors(self.bus)
-        except GLib.Error as e:
-            log.error("monitors: %s", e.message)
+            self.monitors = self.desk.monitors(self.bus)
+        except (GLib.Error, OSError, ValueError, subprocess.SubprocessError) as e:
+            log.error("monitors: %s", getattr(e, "message", e))
             return
         log.info("monitors changed: %s", self.monitors)
         self.broadcast_window_list()
@@ -536,9 +541,10 @@ class Host:
             return
         try:
             cursor = mutter.CURSOR_EMBEDDED if spec.cursor else mutter.CURSOR_HIDDEN
-            self.capture = mutter.Capture(self.bus, monitor=spec.connector, virtual=spec.virtual, cursor_mode=cursor,
-                                          on_ready=lambda node: self._start_pipeline(spec, self._pipewire(node, spec)),
-                                          on_closed=self._capture_closed)
+            self.capture = self.desk.Capture(self.bus, monitor=spec.connector, virtual=spec.virtual,
+                                             cursor_mode=cursor,
+                                             on_ready=lambda node: self._start_pipeline(spec, self._pipewire(node, spec)),
+                                             on_closed=self._capture_closed)
             if self.capture.enable_clipboard(self._clipboard_from_here, wire.MAX_CLIPBOARD_TEXT):
                 last = getattr(self, "clip_last", None)
                 if last and getattr(self, "clip_from", None) is not None:
@@ -572,6 +578,9 @@ class Host:
         # so a node ID there links to nothing and no frame ever arrives.
         target = "path"
         extra = ""
+        fd = getattr(self.capture, "pipewire_fd", None)
+        if fd is not None:      # the portal's own PipeWire connection (Hyprland)
+            extra += f" fd={fd}"
         # GNOME sends a frame only when the screen changes. On a still screen, PipeWire repeats the
         # last one once a second: enough for the 8 s no-frames check and to sharpen the picture, and
         # the GPU sleeps in between (at 100 ms it encoded 10 identical frames a second, ~100 W on a

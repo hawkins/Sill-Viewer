@@ -1,0 +1,12 @@
+#!/bin/sh
+# The screen picker for xdg-desktop-portal-hyprland (its screencopy:custom_picker_binary).
+# When Sill asked for a monitor in the last 30 seconds, answers with it, so nobody has to click
+# on this computer's screen. Any other app's request gets Hyprland's own picker.
+pick="${XDG_RUNTIME_DIR:-/tmp/sill-linux-$(id -u)}/sill-linux-pick"
+if [ -s "$pick" ] && [ -n "$(find "$pick" -newermt '-30 seconds' 2>/dev/null)" ]; then
+    monitor="$(cat "$pick")"
+    rm -f "$pick"
+    echo "[SELECTION]r/screen:$monitor"
+    exit 0
+fi
+exec hyprland-share-picker "$@"

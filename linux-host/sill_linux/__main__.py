@@ -1,4 +1,4 @@
-"""sill-linux: a Linux (GNOME, Wayland) host for the Sill iPhone and iPad app.
+"""sill-linux: a Linux (GNOME or Hyprland, Wayland) host for the Sill iPhone and iPad app.
 
   sill-linux               run the host (normally started by the systemd user service)
   sill-linux pair          show a pairing code and QR code for a new device
@@ -41,7 +41,7 @@ def check():
     import os
     ok = lambda good, text: print(("  OK    " if good else "  FAIL  ") + text) or good
     import gi
-    from . import mutter, video
+    from . import hypr, mutter, video
     from gi.repository import Gio, GLib
     video.init()
     print("Sill for Linux: checking this computer\n")
@@ -52,14 +52,32 @@ def check():
     except GLib.Error as e:
         bus = None
         ok(False, f"session D-Bus: {e.message}")
-    if bus and ok(mutter.available(bus), "GNOME remote desktop API (org.gnome.Mutter.RemoteDesktop)"):
+    gnome = bool(bus) and mutter.available(bus)
+    desk = mutter if gnome else hypr
+    if gnome:
+        ok(True, "GNOME remote desktop API (org.gnome.Mutter.RemoteDesktop)")
+    elif hypr.available():
+        ok(True, "Hyprland (no GNOME: no virtual screens or Fit screen)")
+        ok(bus is not None and hypr.portal_available(bus), "ScreenCast portal (xdg-desktop-portal-hyprland)")
+        ok(hypr.picker_configured(), "the portal's picker answers for Sill (custom_picker_binary in "
+           "~/.config/hypr/xdph.conf; without it, pick each monitor once on this screen)")
+        ok(os.access("/dev/uinput", os.W_OK), "virtual mouse and keyboard (/dev/uinput writable: the input group)")
         try:
-            mons = mutter.monitors(bus)
+            import evdev  # noqa: F401
+            ok(True, "python-evdev")
+        except ImportError:
+            ok(False, "python-evdev (pacman -S python-evdev)")
+        ok(shutil.which("wl-paste") is not None, "clipboard sharing (wl-clipboard)")
+    else:
+        ok(False, "GNOME remote desktop API (org.gnome.Mutter.RemoteDesktop) or Hyprland")
+    if bus and (gnome or hypr.available()):
+        try:
+            mons = desk.monitors(bus)
             ok(bool(mons), "monitors: " + ", ".join(f"{m.connector} {m.width}x{m.height}"
                                                     f"{' (primary)' if m.primary else ''}" for m in mons))
-        except GLib.Error as e:
-            ok(False, f"monitors: {e.message}")
-    ok(video.have("pipewiresrc"), "PipeWire capture (gstreamer1.0-pipewire)")
+        except (GLib.Error, OSError, ValueError, subprocess.SubprocessError) as e:
+            ok(False, f"monitors: {getattr(e, 'message', e)}")
+    ok(video.have("pipewiresrc"), "PipeWire capture (gstreamer1.0-pipewire, or gst-plugin-pipewire)")
     ok(video.have("h265parse"), "HEVC parser (gstreamer1.0-plugins-bad)")
     vk = video.vulkan_device()
     ok(True, f"Vulkan HEVC (sill-vkenc): {'works on ' + vk if vk else 'not used (needs NVIDIA and FFmpeg hevc_vulkan)'}")
@@ -92,11 +110,14 @@ def check():
         from gi.repository import AyatanaAppIndicator3  # noqa: F401
         ok(True, "tray icon library (AyatanaAppIndicator3)")
     except (ValueError, ImportError):
-        ok(False, "tray icon library: install gir1.2-ayatanaappindicator3-0.1")
-    ext = subprocess.run(["sh", "-c", "gnome-extensions list --enabled 2>/dev/null | grep -i appindicator"],
-                         capture_output=True, text=True).stdout.strip()
-    ok(bool(ext), "GNOME shows tray icons (AppIndicator extension" + (f": {ext})" if ext else
-       " is off: run  gnome-extensions enable ubuntu-appindicators@ubuntu.com)"))
+        ok(False, "tray icon library: install gir1.2-ayatanaappindicator3-0.1 (libayatana-appindicator on Arch)")
+    if gnome:
+        ext = subprocess.run(["sh", "-c", "gnome-extensions list --enabled 2>/dev/null | grep -i appindicator"],
+                             capture_output=True, text=True).stdout.strip()
+        ok(bool(ext), "GNOME shows tray icons (AppIndicator extension" + (f": {ext})" if ext else
+           " is off: run  gnome-extensions enable ubuntu-appindicators@ubuntu.com)"))
+    else:
+        print("  NOTE  the tray icon shows in a bar with a system tray (Waybar's tray module, for one)")
     ufw = subprocess.run(["sh", "-c", "ufw status 2>/dev/null | head -1"], capture_output=True, text=True).stdout
     if "active" in ufw and "inactive" not in ufw:
         print("  NOTE  ufw firewall is on: run  sudo ufw allow 7456/tcp && sudo ufw allow 5353/udp")
@@ -132,7 +153,7 @@ def main():
     # Off by default: on GNOME 50 with NVIDIA it gave blank frames, and no more of them.
     ap.add_argument("--dmabuf", choices=["auto", "off"], default="off",
                     help="virtual screens: take frames from GNOME on the GPU (auto), or as copies in memory (off)")
-    ap.add_argument("--test-source", action="store_true", help="stream a test pattern, without GNOME")
+    ap.add_argument("--test-source", action="store_true", help="stream a test pattern, without a desktop")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 

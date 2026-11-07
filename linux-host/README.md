@@ -2,10 +2,13 @@
 
 > Unofficial: an independent companion to [Sill](https://getsill.app), not made by the Sill team.
 
-A Linux host for the [Sill](https://github.com/Saffsanity/sill) iPhone and iPad app. Your Ubuntu
+A Linux host for the [Sill](https://github.com/Saffsanity/sill) iPhone and iPad app. Your Linux
 desktop shows up in the Sill app from the App Store, like a Mac does.
 
-Needs: Ubuntu with GNOME on Wayland. An NVIDIA, AMD or Intel GPU for hardware HEVC (software works, slower).
+Needs: Ubuntu or Arch, with GNOME on Wayland or Hyprland. An NVIDIA, AMD or Intel GPU for hardware
+HEVC (software works, slower).
+
+`install.sh` uses `apt-get` or `pacman`, whichever the computer has.
 
 ## Install
 
@@ -37,11 +40,28 @@ while locked). Only a device you paired can connect, so it needs no password.
   disconnect. A GNOME virtual screen would fit exactly, but on some GPUs (NVIDIA, GNOME 50) it
   draws only a few frames a second. To use it anyway: run the host with `--fit virtual`.
 
+## On Hyprland
+
+Everything above works the same, except what needs GNOME: virtual screens, Fit screen and Match this
+screen (the viewer scales the monitor instead). Hyprland has no remote desktop API, so:
+
+- **The screen** comes through the ScreenCast portal (xdg-desktop-portal-hyprland). Its picker would
+  ask on this computer's screen which monitor to share. `install.sh` offers to add Sill's own picker
+  to `~/.config/hypr/xdph.conf` (`screencopy:custom_picker_binary`): it answers for Sill and shows
+  Hyprland's picker to every other app. Without it, pick each monitor once when a device first asks
+  for it; the portal remembers the choice.
+- **Mouse and keyboard** are a virtual device (`/dev/uinput`), so your user must be in the `input`
+  group (`install.sh` offers to set that up). Typed text is mapped for a US keyboard layout.
+- **Clipboard** goes through wl-clipboard.
+- **The tray icon** shows in a bar with a system tray, such as Waybar's `tray` module.
+- The service starts with `graphical-session.target` (uwsm starts it). The systemd user session needs
+  `WAYLAND_DISPLAY` and `HYPRLAND_INSTANCE_SIGNATURE`; `install.sh` says when they are missing.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `sill-linux check` | Tests GNOME, PipeWire, the encoder and Avahi. |
+| `sill-linux check` | Tests GNOME or Hyprland, PipeWire, the encoder and Avahi. |
 | `sill-linux pair` | Shows a QR code and a code, to pair a device. |
 | `sill-linux status` | Shows what is connected and streaming. |
 | `sill-linux devices` | Lists paired devices. |
@@ -65,10 +85,10 @@ Options go in the service file (`~/.config/systemd/user/sill-linux.service`, the
 Single app windows (GNOME has no API for that), the app list, Mac menus, trackpad gestures,
 remote access from outside your network (Tailscale to the home port may work).
 
-## Display watchdog (off until you turn it on)
+## Display watchdog (GNOME only; off until you turn it on)
 
 On NVIDIA, a GNOME virtual screen can leave the desktop stuck: the monitor stays black and
-gnome-shell logs `Failed to lock front buffer` about once a minute. `install.sh` sets up a small
+gnome-shell logs `Failed to lock front buffer` about once a minute. On GDM, `install.sh` sets up a small
 root service that can restart GDM when that keeps happening for 90 seconds or more.
 
 - **Off by default.** Turn it on from the Sill icon (**Fix a stuck black screen**) or with

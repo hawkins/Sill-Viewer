@@ -1,4 +1,5 @@
-"""The Sill icon at the top of the screen (an AppIndicator, which Ubuntu's GNOME shows by default).
+"""The Sill icon at the top of the screen (an AppIndicator, which Ubuntu's GNOME shows by default;
+on Hyprland, a bar with a tray such as Waybar).
 
 It talks to the running host through its control socket, like the `sill-linux` command does:
 pause and resume sharing, disconnect a device, the stream's quality, pairing, paired devices.
@@ -218,7 +219,9 @@ class Tray:
 
     def show_log(self):
         cmd = ["journalctl", "--user", "-u", "sill-linux", "-f", "-n", "200"]
-        for term in (["gnome-terminal", "--"], ["ptyxis", "--"], ["kgx", "--"], ["xterm", "-e"]):
+        for term in (["gnome-terminal", "--"], ["ptyxis", "--"], ["kgx", "--"], ["xdg-terminal-exec"], ["kitty"],
+                     ["foot"], ["alacritty", "-e"], ["wezterm", "start", "--"], ["ghostty", "-e"], ["konsole", "-e"],
+                     ["xterm", "-e"]):
             if shutil.which(term[0]):
                 subprocess.Popen(term + cmd)
                 return

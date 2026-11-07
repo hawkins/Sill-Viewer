@@ -92,12 +92,17 @@ new="$tmp/sill-linux-host"
 [ -d "$new/sill_linux" ] || { echo "the download has no sill_linux folder"; exit 1; }
 find "$new" -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
-if [ $force = 1 ] || ! diff -rq -x __pycache__ "$new/sill_linux" "$APP/sill_linux" >/dev/null 2>&1; then
+if [ $force = 1 ] || ! diff -rq -x __pycache__ -x sill-vkenc "$new/sill_linux" "$APP/sill_linux" >/dev/null 2>&1; then
     mkdir -p "$APP"
     rm -rf "$APP/sill_linux.new"
     cp -r "$new/sill_linux" "$APP/sill_linux.new"
     rm -rf "$APP/sill_linux"
     mv "$APP/sill_linux.new" "$APP/sill_linux"
+    # Built for Ubuntu's FFmpeg: elsewhere (Arch), build it again for this one, as install.sh does.
+    if ldd "$APP/sill_linux/vkenc/sill-vkenc" 2>/dev/null | grep -q "not found" && command -v gcc >/dev/null \
+        && pkg-config --exists libavcodec libavutil 2>/dev/null; then
+        "$APP/sill_linux/vkenc/build.sh" >/dev/null || echo "could not build the Vulkan encoder helper"
+    fi
     systemctl --user restart sill-linux 2>/dev/null || true
     # The tray icon runs the same code, so its menu changes too. Only when it runs: never start it.
     systemctl --user try-restart sill-linux-tray 2>/dev/null || true

@@ -137,6 +137,7 @@ class Host:
         self.bus = None
         self.mutter = False          # GNOME: virtual screens and Fit screen too
         self.desk = mutter           # the desktop's capture, input and monitors: mutter or hypr
+        self.sources = []            # Hyprland's windows and workspaces (hypr.sources()); GNOME lists none
         if not args.test_source:
             self.bus = mutter.session_bus()
             self.mutter = mutter.available(self.bus)
@@ -149,6 +150,9 @@ class Host:
                 log.info("Hyprland: screen through the ScreenCast portal, input through uinput")
             self.monitors = self.desk.monitors(self.bus)
             self.desk.watch_monitors(self.bus, self._monitors_changed)
+            if self.desk is hypr:
+                self.sources = hypr.sources()
+                hypr.watch_windows(self._windows_changed)
             log.info("monitors: %s", self.monitors)
         self.updates = updates.Checker(on_change=lambda: GLib.idle_add(lambda: (self.broadcast_window_list(), False)[1]))
         self.door = Door(self.identity, args.port, self, self.devices, require_pairing=not args.open)
@@ -202,6 +206,7 @@ class Host:
         if self.mutter:
             windows.append({"id": VIRTUAL_ID, "title": "A screen sized to this device", "appName": "Virtual Display",
                             "bundleID": "linux.virtual", "width": 0, "height": 0})
+        windows += [{k: v for k, v in w.items() if k[0] != "_"} for w in self.sources]
         return {"macName": self.name, "windows": windows, "active": self.active, "launchID": self.launch_id,
                 "hostVersion": "0.1.0", "protocol": wire.PROTOCOL,
                 # Sill Viewer reads these; Sill on iPhone and iPad leaves them out.
@@ -254,6 +259,18 @@ class Host:
         log.info("monitors changed: %s", self.monitors)
         self.broadcast_window_list()
         self.schedule_apply(1.0)
+
+    def _windows_changed(self):
+        try:
+            sources = self.desk.sources()
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
+            log.error("windows: %s", e)
+            return
+        if sources == self.sources:
+            return
+        self.sources = sources
+        self.broadcast_window_list()
+        self.schedule_apply(0.2)    # the picked window may have moved to another monitor
 
     # --- sessions (called from connection threads) ---------------------------------------------
     def paused_goodbye(self):
@@ -405,6 +422,13 @@ class Host:
         if "window" in src:
             wid = src["window"].get("_0")
             known = {w["id"] for w in self.window_list()["windows"]}
+            picked = next((w for w in self.sources if w["id"] == wid), None)
+            if picked is not None:
+                # A Hyprland window or workspace: show it on the desktop, and stream its monitor.
+                try:
+                    self.desk.focus(picked["_focus"])
+                except (OSError, subprocess.SubprocessError) as e:
+                    log.warning("could not show %s: %s", picked["title"], e)
             if wid not in known:
                 log.info("pick of an unknown window %s: showing the desktop", wid)
                 src = {"desktop": {}}
@@ -515,7 +539,9 @@ class Host:
                 k = 1 if half else 2
             return Spec(kind="mutter", connector=None, virtual=True, width=_even(vp["width"] * k),
                         height=_even(vp["height"] * k), vscale=float(k), **dict(base, scale_half=False))
-        mon = next((m for m in self.monitors if window_id(m.connector) == wid), None)
+        picked = next((w for w in self.sources if w["id"] == wid), None)
+        mon = next((m for m in self.monitors if window_id(m.connector) == wid
+                    or (picked is not None and m.connector == picked["_monitor"])), None)
         if mon is None:
             mon = next((m for m in self.monitors if m.primary), self.monitors[0] if self.monitors else None)
         if mon is None:

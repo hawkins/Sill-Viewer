@@ -17,6 +17,7 @@ import socket
 import subprocess
 import threading
 import time
+import zlib
 
 from gi.repository import Gio, GLib
 
@@ -68,10 +69,17 @@ def monitors(bus=None):
     return out
 
 
-def watch_monitors(bus, callback):
-    """Calls callback() on the main thread when a monitor comes or goes."""
+def _watch_events(names, callback, delay_ms):
+    """Calls callback() on the main thread, delay_ms after Hyprland sends one of the events in
+    names (events that come close together make one call)."""
     sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")
     path = os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"), "hypr", sig, ".socket2.sock")
+    pending = threading.Event()
+
+    def fire():
+        pending.clear()
+        callback()
+        return False
 
     def loop():
         while True:
@@ -79,12 +87,83 @@ def watch_monitors(bus, callback):
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.connect(path)
                 for line in s.makefile("r", encoding="utf-8", errors="replace"):
-                    if line.split(">>", 1)[0] in ("monitoradded", "monitorremoved"):
-                        GLib.timeout_add(500, lambda: (callback(), False)[1])
+                    if line.split(">>", 1)[0] in names and not pending.is_set():
+                        pending.set()
+                        GLib.timeout_add(delay_ms, fire)
             except OSError as e:
                 log.debug("event socket: %s", e)
             time.sleep(5)
     threading.Thread(target=loop, name="hypr-events", daemon=True).start()
+
+
+def watch_monitors(bus, callback):
+    """Calls callback() on the main thread when a monitor comes or goes."""
+    _watch_events({"monitoradded", "monitorremoved"}, callback, 500)
+
+
+def watch_windows(callback):
+    """Calls callback() on the main thread when a window or workspace comes, goes, moves or is retitled."""
+    _watch_events({"openwindow", "closewindow", "movewindow", "movewindowv2", "windowtitle", "windowtitlev2",
+                   "createworkspace", "createworkspacev2", "destroyworkspace", "destroyworkspacev2",
+                   "moveworkspace", "moveworkspacev2", "renameworkspace"}, callback, 300)
+
+
+def _source_id(kind, key):
+    return (zlib.crc32(f"{kind}:{key}".encode()) & 0x7FFFFFFF) | 0x100
+
+
+def sources():
+    """The windows and the workspaces that have windows, for the viewer's list. Each is a dict of
+    the wire fields (id, title, appName, bundleID, width, height) and, with a leading underscore,
+    what the host needs: _monitor (its connector) and _focus (what focus() shows: "workspace" or
+    "window" and the argument)."""
+    monitors = {m["id"]: m for m in _raw_monitors()}
+    clients = [c for c in _hyprctl_json("clients") if c.get("mapped") and not c.get("hidden", False)]
+    clients.sort(key=lambda c: (c["workspace"]["id"], c["at"][1], c["at"][0]))
+    workspaces = []
+    for ws in _hyprctl_json("workspaces"):
+        normal = ws["type"] == "normal" if "type" in ws else ws["id"] > 0     # not a special workspace
+        if normal and ws["windows"] > 0 and ws["monitorID"] in monitors:
+            workspaces.append(ws)
+    workspaces.sort(key=lambda ws: ws["id"])
+    out = []
+    for ws in workspaces:
+        m = monitors[ws["monitorID"]]
+        w, h = _logical_size(m)
+        classes = []
+        for c in clients:
+            if c["workspace"]["id"] == ws["id"] and c["class"] and c["class"] not in classes:
+                classes.append(c["class"])
+        ref = str(ws["id"]) if ws["name"] == str(ws["id"]) else f"name:{ws['name']}"
+        out.append({"id": _source_id("workspace", ws["id"]), "title": f"Workspace {ws['name']}: {', '.join(classes)}",
+                    "appName": "Workspace", "bundleID": "linux.workspace", "width": int(w), "height": int(h),
+                    "_monitor": m["name"], "_focus": ("workspace", ref)})
+    for c in clients:
+        m = monitors.get(c["monitor"])
+        if m is None:
+            continue    # a window on no monitor (a special workspace that is hidden)
+        out.append({"id": _source_id("window", c["address"]), "title": c["title"] or c["class"],
+                    "appName": c["class"] or "Window", "bundleID": f"linux.window.{c['class']}",
+                    "width": int(c["size"][0] / float(m.get("scale") or 1.0)),
+                    "height": int(c["size"][1] / float(m.get("scale") or 1.0)),
+                    "_monitor": m["name"], "_focus": ("window", f"address:{c['address']}")})
+    return out
+
+
+def _dispatch(*args):
+    r = subprocess.run(["hyprctl", "dispatch", *args], capture_output=True, text=True, timeout=5)
+    return r.returncode == 0 and r.stdout.strip() == "ok", (r.stdout or r.stderr).strip()
+
+
+def focus(target):
+    """Shows a window or a workspace from sources(): target is its _focus."""
+    kind, ref = target
+    # Hyprland 0.55 and later dispatch Lua (hl.dsp.focus); earlier ones take the dispatcher's name.
+    ok, said = _dispatch(f"hl.dsp.focus({{ {kind} = {json.dumps(ref, ensure_ascii=False)} }})")
+    if not ok and "hl.dispatch" in said:
+        ok, said = _dispatch(*(("workspace", ref) if kind == "workspace" else ("focuswindow", ref)))
+    if not ok:
+        log.warning("could not show %s %s: %s", kind, ref, said)
 
 
 def portal_available(bus):

@@ -1,12 +1,50 @@
-#!/bin/sh
-# The screen picker for xdg-desktop-portal-hyprland (its screencopy:custom_picker_binary).
-# When Sill asked for a monitor in the last 30 seconds, answers with it, so nobody has to click
-# on this computer's screen. Any other app's request gets Hyprland's own picker.
-pick="${XDG_RUNTIME_DIR:-/tmp/sill-linux-$(id -u)}/sill-linux-pick"
-if [ -s "$pick" ] && [ -n "$(find "$pick" -newermt '-30 seconds' 2>/dev/null)" ]; then
-    monitor="$(cat "$pick")"
-    rm -f "$pick"
-    echo "[SELECTION]r/screen:$monitor"
-    exit 0
-fi
-exec hyprland-share-picker "$@"
+#!/usr/bin/python3
+"""The screen picker for xdg-desktop-portal-hyprland (its screencopy:custom_picker_binary).
+
+When Sill asked for a monitor or a window in the last 30 seconds (it wrote what it wants to
+$XDG_RUNTIME_DIR/sill-linux-pick: "screen:DP-1" or "window:0x55d0c0ffee"), answers with it, so
+nobody has to click on this computer's screen. Any other app's request gets Hyprland's own picker.
+"""
+import os
+import sys
+import time
+
+pick = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/sill-linux-{os.getuid()}", "sill-linux-pick")
+
+
+def hyprland_picker():
+    os.execvp("hyprland-share-picker", ["hyprland-share-picker"] + sys.argv[1:])
+
+
+try:
+    want = open(pick).read().strip() if time.time() - os.stat(pick).st_mtime < 30 else ""
+except OSError:
+    want = ""
+if not want:
+    hyprland_picker()
+try:
+    os.unlink(pick)
+except OSError:
+    pass
+
+kind, _, ref = want.partition(":")
+if not ref:
+    kind, ref = "screen", want          # an older host wrote the monitor's name alone
+if kind == "screen":
+    print(f"[SELECTION]r/screen:{ref}")
+elif kind == "window":
+    # xdph lists its windows as handle[HC>]class[HT>]title[HE>]address[HA>], the address in decimal,
+    # and takes the handle back. A window has no restore token: its handle is gone with the window.
+    try:
+        address = str(int(ref, 16))
+    except ValueError:
+        address = ""
+    for entry in os.environ.get("XDPH_WINDOW_SHARING_LIST", "").split("[HA>]"):
+        handle, _, rest = entry.partition("[HC>]")
+        if address and rest.rpartition("[HE>]")[2] == address:
+            print(f"[SELECTION]/window:{handle}")
+            sys.exit(0)
+    print(f"[XDPH_PICKER_ERROR] Sill: window {ref} is not in xdph's list", file=sys.stderr)
+    sys.exit(1)
+else:
+    hyprland_picker()

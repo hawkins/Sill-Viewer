@@ -54,8 +54,10 @@ screen (the viewer scales the monitor instead). Hyprland has no remote desktop A
   icon and a thumbnail (taken with `grim`, so it needs grim; a window on another workspace gets
   one too). A workspace has a numbered badge and a thumbnail of its monitor with its windows where
   they are (needs Pillow, else the window focused last). Tapping one shows it on the desktop
-  (Hyprland focuses it, switching workspace if needed) and streams its monitor. The stream is the
-  whole monitor, not that window alone.
+  (Hyprland focuses it, switching workspace if needed). Tapping a window streams that window alone,
+  at its own size (the stream restarts when the window is resized; a window under 160x120 pixels,
+  or one that cannot be streamed, shows its whole monitor). Mouse positions on the iPad map onto
+  the window. Tapping a workspace streams its monitor.
 - **Mouse and keyboard** are a virtual device (`/dev/uinput`), so your user must be in the `input`
   group (`install.sh` offers to set that up). Typed text is mapped for a US keyboard layout.
 - **Clipboard** goes through wl-clipboard.

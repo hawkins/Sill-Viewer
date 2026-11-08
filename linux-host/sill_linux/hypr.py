@@ -34,6 +34,7 @@ REQUEST = "org.freedesktop.portal.Request"
 SESSION = "org.freedesktop.portal.Session"
 PORTAL_CURSOR = {CURSOR_HIDDEN: 1, CURSOR_EMBEDDED: 2, CURSOR_METADATA: 4}
 SOURCE_MONITOR = 1
+SOURCE_WINDOW = 2
 ABS_MAX = 65535
 
 
@@ -118,8 +119,9 @@ def sources():
     what the host needs: _icon (for icons.icon_png), _monitor (its connector), _focus (what
     focus() shows: "workspace" or "window" and the argument) and, for thumbs.py, _ws (the
     workspace's id); for a workspace _canvas (its monitor's size), for a window _stable (its
-    stableId), _px (its size in pixels), _rect (where it is on its monitor) and _rank (0 is the
-    window focused last)."""
+    stableId), _px (its size in pixels), _rect (where it is on its monitor), _rank (0 is the
+    window focused last), _address (its hyprctl address) and _geo (where it is on the layout, in
+    the layout's logical pixels: x, y, width, height)."""
     monitors = {m["id"]: m for m in _raw_monitors()}
     clients = [c for c in _hyprctl_json("clients") if c.get("mapped") and not c.get("hidden", False)]
     clients.sort(key=lambda c: (c["workspace"]["id"], c["at"][1], c["at"][0]))
@@ -151,6 +153,7 @@ def sources():
                     "appName": c["class"] or "Window", "bundleID": f"linux.window.{c['class']}",
                     "width": int(c["size"][0] / scale), "height": int(c["size"][1] / scale),
                     "_icon": ("app", c["class"]), "_monitor": m["name"], "_focus": ("window", f"address:{c['address']}")}
+                   | {"_address": c["address"], "_geo": (c["at"][0], c["at"][1], c["size"][0], c["size"][1])}
                    | ({"_stable": c["stableId"], "_px": (c["size"][0] * scale, c["size"][1] * scale),
                        "_ws": c["workspace"]["id"], "_rank": c.get("focusHistoryID", 0),
                        "_rect": (c["at"][0] - m["x"], c["at"][1] - m["y"], c["size"][0], c["size"][1])}
@@ -311,11 +314,13 @@ class Capture:
     main thread; on_ready(node_id) runs once the PipeWire stream exists, on_closed() if it ends.
     `pipewire_fd` is the portal's PipeWire connection, for pipewiresrc fd=."""
 
-    def __init__(self, bus, monitor=None, virtual=False, cursor_mode=CURSOR_HIDDEN, on_ready=None, on_closed=None):
+    def __init__(self, bus, monitor=None, virtual=False, cursor_mode=CURSOR_HIDDEN, on_ready=None, on_closed=None,
+                 window=None):
         if virtual:
             raise GLib.Error("virtual screens need GNOME")
         self.bus = bus
-        self.connector = monitor
+        self.connector = monitor        # the monitor the stream is of, or the one the window is on
+        self.window = window            # a window's hyprctl address: the stream is of that window alone
         self.on_ready, self.on_closed = on_ready, on_closed
         self.closed = False
         self.subs = []
@@ -364,15 +369,17 @@ class Capture:
         self.session = results["session_handle"]
         self.subs.append(self.bus.signal_subscribe(PORTAL_BUS, SESSION, "Closed", self.session, None,
                                                    Gio.DBusSignalFlags.NONE, lambda *a: self._fail("session closed")))
-        opts = {"types": GLib.Variant("u", SOURCE_MONITOR), "multiple": GLib.Variant("b", False),
-                "cursor_mode": GLib.Variant("u", self.cursor), "persist_mode": GLib.Variant("u", 2)}
-        token = self.tokens.get(self.connector)
+        # A window gets no restore token: its handle is gone with the window.
+        opts = {"types": GLib.Variant("u", SOURCE_MONITOR | SOURCE_WINDOW if self.window else SOURCE_MONITOR),
+                "multiple": GLib.Variant("b", False), "cursor_mode": GLib.Variant("u", self.cursor),
+                "persist_mode": GLib.Variant("u", 0 if self.window else 2)}
+        token = None if self.window else self.tokens.get(self.connector)
         if token:
             opts["restore_token"] = GLib.Variant("s", token)
         # sill-linux-picker reads this, so xdph's picker answers without asking anyone.
         try:
             with open(pick_path(), "w") as f:
-                f.write(self.connector or "")
+                f.write(f"window:{self.window}" if self.window else f"screen:{self.connector or ''}")
         except OSError as e:
             log.debug("pick file: %s", e)
         self._request("SelectSources", lambda t: GLib.Variant("(oa{sv})", (self.session, dict(
@@ -387,7 +394,7 @@ class Capture:
             os.unlink(pick_path())
         except OSError:
             pass
-        if results.get("restore_token"):
+        if results.get("restore_token") and not self.window:
             self.tokens.put(self.connector, results["restore_token"])
         streams = results.get("streams") or []
         if not streams:
@@ -512,13 +519,26 @@ class Capture:
         m = next((m for m in mons if m["name"] == self.connector), mons[0] if mons else None)
         if m is None:
             return
+        lw, lh = _logical_size(m)
+        pw, ph = (m["height"], m["width"]) if m.get("transform", 0) % 2 == 1 else (m["width"], m["height"])
+        self._move_to(mons, m["x"] + x / max(pw, 1) * lw, m["y"] + y / max(ph, 1) * lh)
+
+    def motion_global(self, gx, gy):
+        """gx, gy on the layout, in its logical pixels (a window's position is in those)."""
+        if self.closed:
+            return
+        geo = getattr(self, "geometry", None)
+        if geo is None or time.monotonic() - geo[0] > 2:
+            try:
+                geo = self.geometry = (time.monotonic(), _raw_monitors())
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return
+        self._move_to(geo[1], gx, gy)
+
+    def _move_to(self, mons, gx, gy):
         boxes = [(o["x"], o["y"], *_logical_size(o)) for o in mons]
         left, top = min(b[0] for b in boxes), min(b[1] for b in boxes)
         right, bottom = max(b[0] + b[2] for b in boxes), max(b[1] + b[3] for b in boxes)
-        lw, lh = _logical_size(m)
-        pw, ph = (m["height"], m["width"]) if m.get("transform", 0) % 2 == 1 else (m["width"], m["height"])
-        gx = m["x"] + x / max(pw, 1) * lw
-        gy = m["y"] + y / max(ph, 1) * lh
         self.input.move((gx - left) / max(right - left, 1) * ABS_MAX, (gy - top) / max(bottom - top, 1) * ABS_MAX)
 
     def button(self, button, pressed):

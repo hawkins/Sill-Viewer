@@ -141,6 +141,7 @@ class Host:
         self.icon_pngs = {}          # bundleID -> PNG, for the viewer's list
         self.icons_tried = set()
         self.thumbs = None           # window thumbnails (Hyprland, with grim)
+        self.window_fails = {}       # a window's address -> times it could not be streamed, since it last worked
         if not args.test_source:
             self.bus = mutter.session_bus()
             self.mutter = mutter.available(self.bus)
@@ -580,7 +581,20 @@ class Host:
             return None
         if mon.refresh and mon.refresh >= 24:
             base["fps"] = min(base["fps"], max(24, int(round(mon.refresh))))
+        if self._streamable_window(picked):
+            # Just that window: its own size (a resize restarts the stream), and its monitor's refresh
+            # rate. "Standard" halves a stream; a window no bigger than that is left whole.
+            pw, ph = picked["_px"]
+            base["scale_half"] = base["scale_half"] and (pw > 2560 or ph > 1440)
+            return Spec(kind="mutter", connector=mon.connector, virtual=False, window=picked["_address"],
+                        width=_even(pw), height=_even(ph), **base)
         return Spec(kind="mutter", connector=mon.connector, virtual=False, width=mon.width, height=mon.height, **base)
+
+    def _streamable_window(self, w):
+        """Whether to stream the Hyprland window `w` (a list entry) alone. Not one too small for the
+        encoders, nor one that could not be streamed three times in a row (the whole monitor then)."""
+        return (w is not None and "_address" in w and "_px" in w and self.desk is hypr
+                and w["_px"][0] >= 160 and w["_px"][1] >= 120 and self.window_fails.get(w["_address"], 0) < 3)
 
     def _apply(self, force=False):
         spec = self._desired()
@@ -602,7 +616,8 @@ class Host:
             self.capture = self.desk.Capture(self.bus, monitor=spec.connector, virtual=spec.virtual,
                                              cursor_mode=cursor,
                                              on_ready=lambda node: self._start_pipeline(spec, self._pipewire(node, spec)),
-                                             on_closed=self._capture_closed)
+                                             on_closed=self._capture_closed,
+                                             **({"window": spec.window} if getattr(spec, "window", None) else {}))
             if self.capture.enable_clipboard(self._clipboard_from_here, wire.MAX_CLIPBOARD_TEXT):
                 last = getattr(self, "clip_last", None)
                 if last and getattr(self, "clip_from", None) is not None:
@@ -655,7 +670,9 @@ class Host:
         if el.find_property("always-copy") and not gl:
             extra += " always-copy=true"
         caps = "video/x-raw(memory:DMABuf)" if gl else "video/x-raw"
-        if self.fail_count % 2 == 0:
+        # A window's stream takes no limit above 60 ("no more input formats": the portal offers 60 at
+        # most) and keeps to none: it sends as many frames as the window draws.
+        if self.fail_count % 2 == 0 and not getattr(spec, "window", None):
             caps += f",max-framerate={spec.fps}/1"
         if spec.virtual:
             caps += f",width={spec.width},height={spec.height}"
@@ -733,6 +750,8 @@ class Host:
         w = h = None
         if spec.scale_half and spec.width:
             w, h = _even(spec.width / 2), _even(spec.height / 2)
+        elif getattr(spec, "window", None):
+            w, h = spec.width, spec.height      # a frame of an odd size is scaled to the even one the encoders take
         try:
             self.pipeline = video.Pipeline(source_desc, w, h, spec.fps, spec.bitrate, spec.speed,
                                            self._on_au, self._pipeline_failed, encoder=self.args.encoder,
@@ -787,6 +806,11 @@ class Host:
             log.warning("the encoder cannot do %d fps here; using 60 fps", spec.fps)
 
     def _retry(self):
+        window = getattr(self.running, "window", None)
+        if window:
+            self.window_fails[window] = self.window_fails.get(window, 0) + 1
+            if self.window_fails[window] == 3:
+                log.warning("window %s could not be streamed; showing its monitor", window)
         delay = min(0.5 * (2 ** min(self.fail_count, 5)), 10)
         log.info("restarting the stream in %.1f s", delay)
         self.running = None
@@ -794,6 +818,8 @@ class Host:
 
     def _watchdog(self):
         self._scale_virtual()
+        if getattr(self.running, "window", None):
+            self._windows_changed()     # Hyprland does not say when a window is resized or moved
         p = self.pipeline
         if p is not None and self.running is not None:
             # Every 10 s: the frames the encoder put out, per second. Low here means the screen
@@ -814,6 +840,7 @@ class Host:
                 self.last_frames = (p.frames, time.monotonic())
                 if p.frames > 30:
                     self.fail_count = 0
+                    self.window_fails.clear()
             elif time.monotonic() - t > 8:
                 log.warning("no frames for 8 s; restarting the stream")
                 if p.frames == 0:
@@ -883,6 +910,14 @@ class Host:
             return (r.width, r.height)
         return None
 
+    def _window_geo(self):
+        """Where the window being streamed alone is on the layout (x, y, width, height), else None."""
+        address = getattr(self.running, "window", None)
+        if not address:
+            return None
+        w = next((w for w in self.sources if w.get("_address") == address), None)
+        return w["_geo"] if w is not None else None
+
     def _virtual_scale(self):
         """The scale set on the virtual screen (1 until it is set). GNOME takes pointer positions on
         a virtual stream in logical pixels (stream pixels / scale), not in stream pixels."""
@@ -918,11 +953,13 @@ class Host:
             # A pointer event always ends any scroll still open, so the app under the pointer never
             # takes later moves as part of a finger scroll.
             self._close_scroll(st, cap)
-            if size is not None:
+            geo = self._window_geo()
+            nx, ny = min(max(float(p.get("x", 0)), 0.0), 1.0), min(max(float(p.get("y", 0)), 0.0), 1.0)
+            if geo is not None:
+                cap.motion_global(geo[0] + nx * (geo[2] - 1), geo[1] + ny * (geo[3] - 1))
+            elif size is not None:
                 k = self._virtual_scale()
-                x = min(max(float(p.get("x", 0)), 0.0), 1.0) * (size[0] - 1) / k
-                y = min(max(float(p.get("y", 0)), 0.0), 1.0) * (size[1] - 1) / k
-                cap.motion(x, y)
+                cap.motion(nx * (size[0] - 1) / k, ny * (size[1] - 1) / k)
             button = {"leftDown": (mutter.BTN_LEFT, True), "leftUp": (mutter.BTN_LEFT, False),
                       "rightDown": (mutter.BTN_RIGHT, True), "rightUp": (mutter.BTN_RIGHT, False)}.get(action)
             if button:

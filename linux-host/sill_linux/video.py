@@ -245,7 +245,8 @@ class Pipeline:
         self.lock = threading.Lock()
         self.stopped = False
         self.proc = None                # sill-vkenc, when encoding through Vulkan
-        self.write_lock = threading.Lock()
+        self.mail = None                # the next frame for sill-vkenc: (frame, key), see _write_frame
+        self.mail_cond = threading.Condition()
         self.last_raw = None
         self.key_pending = False
         self.encoder_fault = False      # this stream failed because of Vulkan, not the screen
@@ -357,6 +358,7 @@ class Pipeline:
         bus.connect("message", self._message)
         threading.Thread(target=self._read_aus, args=(proc,), daemon=True).start()
         threading.Thread(target=self._read_errors, args=(proc,), daemon=True).start()
+        threading.Thread(target=self._write_frames, args=(proc,), daemon=True).start()
         self.started = time.monotonic()
         log.info("pipeline: %s ! sill-vkenc on %s", desc, self.vk_device)
         if pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
@@ -403,17 +405,30 @@ class Pipeline:
         return Gst.FlowReturn.OK
 
     def _write_frame(self, frame, key):
-        proc = self.proc
-        if proc is None:
-            return
-        w, h, sy, suv, ouv, data = frame
-        try:
-            with self.write_lock:
+        """Hands a frame to _write_frames. One slot: a newer frame replaces one not written yet (the
+        encoder is behind), and a keyframe request is not lost with it. This never waits: it runs on
+        the thread that reads sill-vkenc's output (a device that fell behind asks for a keyframe),
+        and sill-vkenc stops reading frames while its output is not read. A write here would block
+        both."""
+        with self.mail_cond:
+            self.mail = (frame, key or (self.mail is not None and self.mail[1]))
+            self.mail_cond.notify()
+
+    def _write_frames(self, proc):
+        while True:
+            with self.mail_cond:
+                while self.mail is None and not self.stopped and proc is self.proc:
+                    self.mail_cond.wait(1.0)
+                if self.stopped or proc is not self.proc:
+                    return
+                (w, h, sy, suv, ouv, data), key = self.mail
+                self.mail = None
+            try:
                 proc.stdin.write(struct.pack("7I", 1 if key else 0, w, h, sy, suv, ouv, len(data)))
                 proc.stdin.write(data)
                 proc.stdin.flush()
-        except (BrokenPipeError, ValueError, OSError):
-            pass   # the reader sees it exit and reports it
+            except (BrokenPipeError, ValueError, OSError):
+                return      # _read_aus sees sill-vkenc exit and reports it
 
     def _read_aus(self, proc):
         out = proc.stdout
@@ -467,6 +482,9 @@ class Pipeline:
         self.pipeline = None
         self.sink = None
         proc, self.proc = self.proc, None
+        with self.mail_cond:
+            self.mail = None
+            self.mail_cond.notify_all()
         if proc is not None:
             try:
                 proc.stdin.close()

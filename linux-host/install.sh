@@ -149,11 +149,21 @@ echo "==> Checking this computer"
 
 echo "==> Starting the service"
 systemctl --user daemon-reload
-systemctl --user enable sill-linux.service sill-linux-tray.service
-systemctl --user restart sill-linux.service sill-linux-tray.service
-sleep 2
-systemctl --user --no-pager status sill-linux.service | head -5
-if ! systemctl --user is-active --quiet graphical-session.target; then
+echo "Sill can start whenever you log in, or only when you ask (a Sill shortcut in your application menu"
+echo "and on the Desktop, and  sill-linux start). While it runs, a paired device can connect."
+if ask "Start Sill when you log in?" y; then
+    login=1
+    systemctl --user enable sill-linux.service sill-linux-tray.service
+    systemctl --user restart sill-linux.service sill-linux-tray.service
+    sleep 2
+    systemctl --user --no-pager status sill-linux.service | head -5
+else
+    login=0
+    "$HOME/.local/bin/sill-linux" startup manual
+    systemctl --user stop sill-linux.service sill-linux-tray.service 2>/dev/null || true
+    echo "Sill is not running now: start it from the Sill shortcut, or  sill-linux start."
+fi
+if [ $login = 1 ] && ! systemctl --user is-active --quiet graphical-session.target; then
     echo "NOTE: graphical-session.target is not active, so the service will not start at login by itself."
     echo "      Start your desktop with a session manager that starts it (uwsm, for one), or start Sill from"
     echo "      your desktop's autostart: systemctl --user start sill-linux sill-linux-tray"
@@ -173,5 +183,9 @@ if systemctl is-enabled --quiet gdm 2>/dev/null || systemctl is-enabled --quiet 
 fi
 
 echo
-echo "Done. On your iPad, open Sill. Tap this computer. Then type the code from the notification."
+if [ $login = 1 ]; then
+    echo "Done. On your iPad, open Sill. Tap this computer. Then type the code from the notification."
+else
+    echo "Done. Start Sill, then on your iPad open Sill, tap this computer, and type the code from the notification."
+fi
 echo "Log:  journalctl --user -u sill-linux -f"

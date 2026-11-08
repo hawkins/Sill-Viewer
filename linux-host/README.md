@@ -65,10 +65,26 @@ screen (the viewer scales the monitor instead). Hyprland has no remote desktop A
 - The service starts with `graphical-session.target` (uwsm starts it). The systemd user session needs
   `WAYLAND_DISPLAY` and `HYPRLAND_INSTANCE_SIGNATURE`; `install.sh` says when they are missing.
 
+## Start it when you want
+
+By default Sill starts when you log in. While it runs, a paired device can connect at any time.
+To start it only when you ask:
+
+```
+sill-linux startup manual     # not at login; adds a Sill shortcut (application menu and ~/Desktop)
+sill-linux startup login      # back to starting at login
+sill-linux start              # what the shortcut runs: starts Sill and its tray icon
+sill-linux stop               # what its "Stop Sill" action runs
+```
+
+`install.sh` asks which you want. In a Hyprland config, a key can do it too, for example
+`bind = SUPER, S, exec, sill-linux start`. An update never starts Sill when it is stopped.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `sill-linux start`, `stop` | Starts or stops Sill and its tray icon. `startup manual` or `startup login` picks whether it starts at login. |
 | `sill-linux check` | Tests GNOME or Hyprland, PipeWire, the encoder and Avahi. |
 | `sill-linux pair` | Shows a QR code and a code, to pair a device. |
 | `sill-linux status` | Shows what is connected and streaming. |

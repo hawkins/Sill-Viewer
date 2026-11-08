@@ -103,7 +103,8 @@ if [ $force = 1 ] || ! diff -rq -x __pycache__ -x sill-vkenc "$new/sill_linux" "
         && pkg-config --exists libavcodec libavutil 2>/dev/null; then
         "$APP/sill_linux/vkenc/build.sh" >/dev/null || echo "could not build the Vulkan encoder helper"
     fi
-    systemctl --user restart sill-linux 2>/dev/null || true
+    # Only if it runs: for someone who starts Sill by hand, an update must not start it.
+    systemctl --user try-restart sill-linux 2>/dev/null || true
     # The tray icon runs the same code, so its menu changes too. Only when it runs: never start it.
     systemctl --user try-restart sill-linux-tray 2>/dev/null || true
     echo "host updated to ${sha:0:7} and restarted"

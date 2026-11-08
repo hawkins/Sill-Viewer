@@ -13,6 +13,7 @@
 import argparse
 import json
 import logging
+import os
 import shutil
 import socket
 import subprocess
@@ -124,14 +125,75 @@ def check():
         print("  NOTE  ufw firewall is on: run  sudo ufw allow 7456/tcp && sudo ufw allow 5353/udp")
 
 
+UNITS = ["sill-linux.service", "sill-linux-tray.service"]
+APPLICATIONS = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications")
+
+
+def launcher_files():
+    """Where "Sill" is a shortcut: the application menu, and the Desktop folder when there is one."""
+    files = [os.path.join(APPLICATIONS, "sill-linux.desktop")]
+    desktop = os.path.expanduser("~/Desktop")
+    if os.path.isdir(desktop):
+        files.append(os.path.join(desktop, "Sill.desktop"))
+    return files
+
+
+def write_launchers():
+    exe = os.path.expanduser("~/.local/bin/sill-linux")
+    text = f"""[Desktop Entry]
+Type=Application
+Name=Sill
+GenericName=Share this computer with an iPhone or iPad
+Comment=Start Sill: this computer shows in the Sill app
+Exec="{exe}" start
+Icon=video-display
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=sill;ipad;iphone;remote;share;
+Actions=Stop;
+
+[Desktop Action Stop]
+Name=Stop Sill
+Exec="{exe}" stop
+"""
+    for path in launcher_files():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, 0o755)       # a Desktop shortcut must be executable to launch
+    return launcher_files()
+
+
+def systemctl(*args):
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True)
+
+
+def startup(mode):
+    """Whether Sill starts when you log in ("login") or only when you ask ("manual")."""
+    if mode == "manual":
+        systemctl("disable", *UNITS)
+        places = ", ".join(write_launchers())
+        print("Sill starts only when you ask: the Sill shortcut (" + places + "), or  sill-linux start.")
+        print("It does not start at login. Stop it with  sill-linux stop  or the shortcut's Stop Sill.")
+    elif mode == "login":
+        r = systemctl("enable", *UNITS)
+        if r.returncode:
+            sys.exit(r.stderr.strip() or "could not turn on Sill at login")
+        print("Sill starts when you log in.")
+    else:
+        on = systemctl("is-enabled", *UNITS).returncode == 0
+        print("Sill starts when you log in." if on else "Sill starts only when you ask  (sill-linux start).")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="sill-linux", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", nargs="?", default="run",
                     choices=["run", "pair", "status", "devices", "forget", "check", "tray", "pause", "resume", "release",
-                             "watchdog"])
+                             "watchdog", "start", "stop", "startup"])
     ap.add_argument("device", nargs="?",
-                    help="with forget: the device's name; with watchdog: on, off, pause (4 hours), resume or status")
+                    help="with forget: the device's name; with watchdog: on, off, pause (4 hours), resume or status; "
+                         "with startup: login, manual or status")
     ap.add_argument("--name", help="the name devices see (default: this computer's host name)")
     ap.add_argument("--port", type=int, default=7456, help="TCP port (default 7456)")
     ap.add_argument("--open", action="store_true",
@@ -158,6 +220,20 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
+    if args.command in ("start", "stop"):
+        r = systemctl(args.command, *UNITS)
+        if r.returncode:
+            sys.exit(f"could not {args.command} Sill: {r.stderr.strip()}")
+        text = ("Sill is on", "This computer shows in the Sill app.") if args.command == "start" else \
+               ("Sill is off", "Devices can no longer connect.")
+        print(f"{text[0]}. {text[1]}")
+        if not sys.stdout.isatty() and shutil.which("notify-send"):     # from a shortcut: nobody sees stdout
+            subprocess.run(["notify-send", "-a", "Sill", "-i", "video-display", *text])
+        return
+    if args.command == "startup":
+        if args.device not in (None, "login", "manual", "status"):
+            sys.exit("usage: sill-linux startup [login|manual|status]")
+        return startup(args.device or "status")
     if args.command == "pair":
         r = control("pair")
         print(f"\nPair a device with {r['name']}\n")

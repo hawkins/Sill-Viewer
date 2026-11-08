@@ -11,7 +11,7 @@ import zlib
 
 from gi.repository import GLib
 
-from . import files, hypr, keymap, mutter, updates, video, wire
+from . import files, hypr, icons, keymap, mutter, thumbs, updates, video, wire
 from .identity import Devices, Identity, config_dir
 from .mdns import Advertiser
 from .net import Door
@@ -138,6 +138,9 @@ class Host:
         self.mutter = False          # GNOME: virtual screens and Fit screen too
         self.desk = mutter           # the desktop's capture, input and monitors: mutter or hypr
         self.sources = []            # Hyprland's windows and workspaces (hypr.sources()); GNOME lists none
+        self.icon_pngs = {}          # bundleID -> PNG, for the viewer's list
+        self.icons_tried = set()
+        self.thumbs = None           # window thumbnails (Hyprland, with grim)
         if not args.test_source:
             self.bus = mutter.session_bus()
             self.mutter = mutter.available(self.bus)
@@ -153,7 +156,12 @@ class Host:
             if self.desk is hypr:
                 self.sources = hypr.sources()
                 hypr.watch_windows(self._windows_changed)
+                if thumbs.available():
+                    self.thumbs = thumbs.Thumbnails(self)
+                else:
+                    log.warning("no grim: the window list has no thumbnails")
             log.info("monitors: %s", self.monitors)
+        self._new_icons()
         self.updates = updates.Checker(on_change=lambda: GLib.idle_add(lambda: (self.broadcast_window_list(), False)[1]))
         self.door = Door(self.identity, args.port, self, self.devices, require_pairing=not args.open)
         self.pairing = Pairing(self.identity, self.devices, self.name, self.door.port, local_addresses)
@@ -194,7 +202,8 @@ class Host:
         return {"p": "0" if self.args.open else "1", "r": self.identity.recognition_tag()}
 
     # --- catalog --------------------------------------------------------------------------------
-    def window_list(self):
+    def _entries(self):
+        """What the list offers: wire fields, and with a leading underscore what only the host uses."""
         windows = []
         if self.args.test_source:
             windows.append({"id": 0x200, "title": "Test pattern", "appName": "Test", "bundleID": "linux.test",
@@ -202,11 +211,28 @@ class Host:
         for m in self.monitors:
             windows.append({"id": window_id(m.connector), "title": f"{m.name} ({m.connector})", "appName": "Display",
                             "bundleID": "linux.display", "width": int(m.width / m.scale),
-                            "height": int(m.height / m.scale)})
+                            "height": int(m.height / m.scale), "_icon": ("display",)})
         if self.mutter:
             windows.append({"id": VIRTUAL_ID, "title": "A screen sized to this device", "appName": "Virtual Display",
-                            "bundleID": "linux.virtual", "width": 0, "height": 0})
-        windows += [{k: v for k, v in w.items() if k[0] != "_"} for w in self.sources]
+                            "bundleID": "linux.virtual", "width": 0, "height": 0, "_icon": ("virtual",)})
+        return windows + self.sources
+
+    def _new_icons(self):
+        """Draws the icons of entries that have none yet; returns their messages."""
+        out = []
+        for w in self._entries():
+            bid = w["bundleID"]
+            if bid in self.icons_tried or "_icon" not in w:
+                continue
+            self.icons_tried.add(bid)
+            png = icons.icon_png(w["_icon"])
+            if png:
+                self.icon_pngs[bid] = png
+                out.append(wire.pack(wire.APP_ICON, wire.icon_blob(bid, png)))
+        return out
+
+    def window_list(self):
+        windows = [{k: v for k, v in w.items() if k[0] != "_"} for w in self._entries()]
         return {"macName": self.name, "windows": windows, "active": self.active, "launchID": self.launch_id,
                 "hostVersion": "0.1.0", "protocol": wire.PROTOCOL,
                 # Sill Viewer reads these; Sill on iPhone and iPad leaves them out.
@@ -242,6 +268,8 @@ class Host:
 
     def broadcast_window_list(self):
         self.broadcast(wire.jmsg(wire.WINDOW_LIST, self.window_list()))
+        for msg in self._new_icons():
+            self.broadcast(msg)
 
     def broadcast_settings(self, except_session=None):
         msg = wire.jmsg(wire.HOST_SETTINGS, self.settings_state())
@@ -288,7 +316,11 @@ class Host:
             self.idle_since = None
         s.send(wire.jmsg(wire.WINDOW_LIST, self.window_list()))
         s.send(wire.jmsg(wire.HOST_SETTINGS, self.settings_state()))
+        for bid, png in list(self.icon_pngs.items()):
+            s.send(wire.pack(wire.APP_ICON, wire.icon_blob(bid, png)))
         s.send(wire.jmsg(wire.APP_LIST, []))
+        if self.thumbs is not None:
+            self.thumbs.session_added(s)
         self.schedule_apply()
         if self.pipeline is not None:
             self.pipeline.force_keyframe()

@@ -50,9 +50,12 @@ screen (the viewer scales the monitor instead). Hyprland has no remote desktop A
   to `~/.config/hypr/xdph.conf` (`screencopy:custom_picker_binary`): it answers for Sill and shows
   Hyprland's picker to every other app. Without it, pick each monitor once when a device first asks
   for it; the portal remembers the choice.
-- **Windows and workspaces** are in the iPad's list next to the monitors. Tapping one shows it on
-  the desktop (Hyprland focuses it, switching workspace if needed) and streams its monitor. The
-  stream is the whole monitor, not that window alone.
+- **Windows and workspaces** are in the iPad's list next to the monitors. A window has its app's
+  icon and a thumbnail (taken with `grim`, so it needs grim; a window on another workspace gets
+  one too). A workspace has a numbered badge and a thumbnail of its monitor with its windows where
+  they are (needs Pillow, else the window focused last). Tapping one shows it on the desktop
+  (Hyprland focuses it, switching workspace if needed) and streams its monitor. The stream is the
+  whole monitor, not that window alone.
 - **Mouse and keyboard** are a virtual device (`/dev/uinput`), so your user must be in the `input`
   group (`install.sh` offers to set that up). Typed text is mapped for a US keyboard layout.
 - **Clipboard** goes through wl-clipboard.

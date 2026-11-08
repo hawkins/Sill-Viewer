@@ -115,8 +115,11 @@ def _source_id(kind, key):
 def sources():
     """The windows and the workspaces that have windows, for the viewer's list. Each is a dict of
     the wire fields (id, title, appName, bundleID, width, height) and, with a leading underscore,
-    what the host needs: _monitor (its connector) and _focus (what focus() shows: "workspace" or
-    "window" and the argument)."""
+    what the host needs: _icon (for icons.icon_png), _monitor (its connector), _focus (what
+    focus() shows: "workspace" or "window" and the argument) and, for thumbs.py, _ws (the
+    workspace's id); for a workspace _canvas (its monitor's size), for a window _stable (its
+    stableId), _px (its size in pixels), _rect (where it is on its monitor) and _rank (0 is the
+    window focused last)."""
     monitors = {m["id"]: m for m in _raw_monitors()}
     clients = [c for c in _hyprctl_json("clients") if c.get("mapped") and not c.get("hidden", False)]
     clients.sort(key=lambda c: (c["workspace"]["id"], c["at"][1], c["at"][0]))
@@ -136,17 +139,22 @@ def sources():
                 classes.append(c["class"])
         ref = str(ws["id"]) if ws["name"] == str(ws["id"]) else f"name:{ws['name']}"
         out.append({"id": _source_id("workspace", ws["id"]), "title": f"Workspace {ws['name']}: {', '.join(classes)}",
-                    "appName": "Workspace", "bundleID": "linux.workspace", "width": int(w), "height": int(h),
+                    "appName": "Workspace", "bundleID": f"linux.workspace.{ws['name']}", "width": int(w),
+                    "height": int(h), "_icon": ("workspace", ws["name"]), "_ws": ws["id"], "_canvas": (w, h),
                     "_monitor": m["name"], "_focus": ("workspace", ref)})
     for c in clients:
         m = monitors.get(c["monitor"])
         if m is None:
             continue    # a window on no monitor (a special workspace that is hidden)
+        scale = float(m.get("scale") or 1.0)
         out.append({"id": _source_id("window", c["address"]), "title": c["title"] or c["class"],
                     "appName": c["class"] or "Window", "bundleID": f"linux.window.{c['class']}",
-                    "width": int(c["size"][0] / float(m.get("scale") or 1.0)),
-                    "height": int(c["size"][1] / float(m.get("scale") or 1.0)),
-                    "_monitor": m["name"], "_focus": ("window", f"address:{c['address']}")})
+                    "width": int(c["size"][0] / scale), "height": int(c["size"][1] / scale),
+                    "_icon": ("app", c["class"]), "_monitor": m["name"], "_focus": ("window", f"address:{c['address']}")}
+                   | ({"_stable": c["stableId"], "_px": (c["size"][0] * scale, c["size"][1] * scale),
+                       "_ws": c["workspace"]["id"], "_rank": c.get("focusHistoryID", 0),
+                       "_rect": (c["at"][0] - m["x"], c["at"][1] - m["y"], c["size"][0], c["size"][1])}
+                      if c.get("stableId") else {}))
     return out
 
 

@@ -20,22 +20,22 @@ echo "==> Installing packages (asks for your password)"
 if command -v apt-get >/dev/null; then
     sudo apt-get update -qq
     sudo apt-get install -y \
-        python3-gi python3-openssl python3-cryptography python3-zeroconf \
+        python3-gi python3-gi-cairo python3-pil python3-openssl python3-cryptography python3-zeroconf librsvg2-common \
         gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
         gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
         gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-pipewire \
         libnotify-bin qrencode avahi-daemon iproute2 gir1.2-gtk-4.0 \
         gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1
     if [ $hyprland = 1 ]; then
-        sudo apt-get install -y python3-evdev wl-clipboard xdg-desktop-portal xdg-desktop-portal-hyprland ||
+        sudo apt-get install -y python3-evdev wl-clipboard grim xdg-desktop-portal xdg-desktop-portal-hyprland ||
             echo "Some Hyprland packages are missing; sill-linux check shows what does not work."
     fi
 elif command -v pacman >/dev/null; then
-    pkgs=(python python-gobject python-pyopenssl python-cryptography python-zeroconf
+    pkgs=(python python-gobject python-cairo python-pillow librsvg python-pyopenssl python-cryptography python-zeroconf
           gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugin-pipewire
           libnotify qrencode avahi iproute2 gtk4 gtk3 libayatana-appindicator
           ffmpeg gcc pkgconf)
-    [ $hyprland = 1 ] && pkgs+=(python-evdev wl-clipboard xdg-desktop-portal xdg-desktop-portal-hyprland)
+    [ $hyprland = 1 ] && pkgs+=(python-evdev wl-clipboard grim xdg-desktop-portal xdg-desktop-portal-hyprland)
     sudo pacman -S --needed "${pkgs[@]}"
 else
     echo "No apt-get or pacman here. Install by hand: Python 3 with PyGObject, pyOpenSSL, cryptography and"

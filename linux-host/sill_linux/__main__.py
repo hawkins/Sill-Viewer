@@ -68,6 +68,7 @@ def check():
         except ImportError:
             ok(False, "python-evdev (pacman -S python-evdev)")
         ok(shutil.which("wl-paste") is not None, "clipboard sharing (wl-clipboard)")
+        ok(shutil.which("grim") is not None, "window thumbnails in the list (grim)")
     else:
         ok(False, "GNOME remote desktop API (org.gnome.Mutter.RemoteDesktop) or Hyprland")
     if bus and (gnome or hypr.available()):

@@ -84,6 +84,17 @@ def jmsg(kind, obj):
     return pack(kind, jbytes(obj))
 
 
+def icon_blob(bundle_id, png):
+    """Kind 4: the bundle ID's length (2 bytes), the ID in UTF-8, then the PNG."""
+    b = bundle_id.encode()
+    return struct.pack(">H", len(b)) + b + png
+
+
+def thumbnail_blob(window_id, jpeg):
+    """Kind 3: the window's ID (4 bytes), then the JPEG."""
+    return struct.pack(">I", window_id) + jpeg
+
+
 def parameter_sets_payload(sets, nal_len=4):
     out = bytearray([nal_len, len(sets)])
     for s in sets:
